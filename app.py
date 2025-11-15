@@ -42,7 +42,7 @@ for pair in WEBSITE_PAIRS.values():
     }
     last_signal_time[pair] = 0
 
-# === INDICATORS ===
+# === EXTREME ANALYSIS INDICATORS ===
 def adv_rsi(prices, period=14):
     if len(prices) < period + 1: return 50
     deltas = [prices[i] - prices[i-1] for i in range(-period, 0)]
@@ -73,7 +73,35 @@ def bollinger_bands(prices, period=20, std_dev=2):
     lower = mean - (std * std_dev)
     return upper, mean, lower
 
-# === WEBSOCKET ENGINE ===
+def adx(prices, period=14):
+    if len(prices) < period + 1: return 0
+    deltas = [prices[i] - prices[i-1] for i in range(-period, 0)]
+    tr = sum(abs(d) for d in deltas)
+    dm_plus = sum(d for d in deltas if d > 0)
+    dm_minus = sum(abs(d) for d in deltas if d < 0)
+    di_plus = 100 * (dm_plus / tr) if tr > 0 else 0
+    di_minus = 100 * (dm_minus / tr) if tr > 0 else 0
+    dx = abs(di_plus - di_minus) / (di_plus + di_minus) * 100 if (di_plus + di_minus) > 0 else 0
+    return dx
+
+def supertrend(prices, period=10, multiplier=3):
+    if len(prices) < period: return 0
+    hl2 = sum((high + low) / 2 for high, low in zip(prices[-period:], prices[-period:])) / period
+    atr = sum(abs(prices[i] - prices[i-1]) for i in range(-period, 0)) / period
+    upper = hl2 + (multiplier * atr)
+    lower = hl2 - (multiplier * atr)
+    return upper if prices[-1] > upper else lower
+
+def volume_proxy(prices, period=10):
+    if len(prices) < period + 1: return 0
+    deltas = [abs(prices[i] - prices[i-1]) for i in range(-period, 0)]
+    return sum(deltas) * 10000
+
+def kpi_momentum(prices, period=10):
+    if len(prices) < period + 1: return 0
+    return prices[-1] - prices[-period-1]
+
+# === EXTREME ANALYSIS ===
 async def websocket_engine():
     global ws
     uri = f"wss://ws.derivws.com/websockets/v3?app_id={APP_ID}"
@@ -120,17 +148,56 @@ async def websocket_engine():
                         ema = ema_crossover(p)
                         macd_val = macd(p)
                         bb_upper, bb_mid, bb_lower = bollinger_bands(p)
+                        adx_val = adx(p)
+                        supertrend_val = supertrend(p)
+                        vol = volume_proxy(p)
+                        mom = kpi_momentum(p)
+                        h20 = max(p[-20:]) if len(p) >= 20 else p[-1]
+                        l20 = min(p[-20:]) if len(p) >= 20 else p[-1]
                         current = live_price
                         trend = data["trend"]
+                        
                         buy_signals = sell_signals = 0
+                        
+                        # RSI
                         if rsi < 32: buy_signals += 2
                         if rsi > 68: sell_signals += 2
+                        
+                        # EMA
                         if ema == "BULLISH": buy_signals += 2
                         if ema == "BEARISH": sell_signals += 2
+                        
+                        # MACD
                         if macd_val > 0: buy_signals += 1
                         if macd_val < 0: sell_signals += 1
+                        
+                        # Bollinger Bands
                         if current < bb_lower: buy_signals += 2
                         if current > bb_upper: sell_signals += 2
+                        
+                        # ADX
+                        if adx_val > 25:
+                            if trend == "UP": buy_signals += 1
+                            if trend == "DOWN": sell_signals += 1
+                        
+                        # Supertrend
+                        if current > supertrend_val: buy_signals += 2
+                        if current < supertrend_val: sell_signals += 2
+                        
+                        # Volume
+                        if vol > 0.5:
+                            if macd_val > 0: buy_signals += 1
+                            if macd_val < 0: sell_signals += 1
+                        
+                        # Momentum
+                        if mom > 0.0001: buy_signals += 1
+                        if mom < -0.0001: sell_signals += 1
+                        
+                        # S/R
+                        if current <= l20 * 1.00005: buy_signals += 1
+                        if current >= h20 * 0.99995: sell_signals += 1
+                        
+                        # FINAL EXTREME ANALYSIS
                         if buy_signals >= 4 and trend != "DOWN":
                             data["direction"] = "GREEN"
                             data["confidence"] = 99
@@ -144,7 +211,8 @@ async def websocket_engine():
                             data["confidence"] = 98
                             move = 0.00030
                             data["predicted_price"] = round(current + move if buy_signals > sell_signals else current - move, 5)
-                        print(f"{API_TO_LABEL[pair]} → {data['direction']} | {data['confidence']}%")
+                        
+                        print(f"{API_TO_LABEL[pair]} → {data['direction']} | {data['confidence']}% | B:{buy_signals} S:{sell_signals} | RSI:{rsi:.1f} | EMA:{ema} | MACD:{macd_val:.5f} | ADX:{adx_val:.1f} | Supertrend:{supertrend_val:.5f}")
         except Exception as e:
             print("WebSocket error:", e)
             await asyncio.sleep(5)
@@ -171,6 +239,5 @@ async def get_signal(pair: str = Query("frxEURUSD")):
     }
 
 if __name__ == "__main__":
-    import os
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
