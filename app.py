@@ -15,8 +15,8 @@ app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # === DERIV API AUTH (Must be valid) ===
-APP_ID = 109504
-AUTH_TOKEN = "kASv9XOzPXBDojU"  # <--- এখানে তোর Deriv API Token দিবি
+APP_ID = 111961
+AUTH_TOKEN = "8zRzA8K10txxdrt"  # <--- এখানে তোর Deriv API Token দিবি
 
 WEBSITE_PAIRS = {
     "EUR/USD": "frxEURUSD",
