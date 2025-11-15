@@ -1,4 +1,4 @@
-# app.py → GOD V11 | Railway + Deriv 100% LIVE | Auth + History + Signal
+# app.py → GOD V12 | Railway + Deriv 100% TICK | Fixed Subscribe
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -8,15 +8,13 @@ import json
 import threading
 from collections import deque
 from typing import Dict
-import math
 import os
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# === DERIV API AUTH (Must be valid) ===
 APP_ID = 111961
-AUTH_TOKEN = "8zRzA8K10txxdrt"  # <--- এখানে তোর Deriv API Token দিবি
+AUTH_TOKEN = "8zRzA8K10txxdrt"
 
 WEBSITE_PAIRS = {
     "EUR/USD": "frxEURUSD",
@@ -41,7 +39,7 @@ for pair in WEBSITE_PAIRS.values():
         "last_tick": 0
     }
 
-# === INDICATORS ===
+# === RSI ===
 def rsi(prices, period=14):
     if len(prices) < period + 1: return 50
     deltas = [prices[i] - prices[i-1] for i in range(-period, 0)]
@@ -51,7 +49,7 @@ def rsi(prices, period=14):
     rs = up / down
     return 100 - (100 / (1 + rs))
 
-# === WEBSOCKET ENGINE WITH AUTH ===
+# === WEBSOCKET ENGINE (FIXED) ===
 async def websocket_engine():
     uri = f"wss://ws.derivws.com/websockets/v3?app_id={APP_ID}"
     while True:
@@ -65,74 +63,99 @@ async def websocket_engine():
                 auth_resp = json.loads(await ws.recv())
                 if auth_resp.get("error"):
                     print("Auth Failed:", auth_resp["error"]["message"])
-                    await asyncio.sleep(10)
+                    await asyncio.sleep(5)
                     continue
                 print("Authenticated with Deriv")
 
-                # Subscribe to ticks + history
+                # Subscribe to ticks (CORRECT WAY)
                 for pair in WEBSITE_PAIRS.values():
-                    await ws.send(json.dumps({"ticks": pair, "subscribe": 1}))
+                    # Subscribe to live ticks
+                    await ws.send(json.dumps({
+                        "ticks": pair,
+                        "subscribe": 1
+                    }))
+                    print(f"Subscribed to {pair}")
+
+                    # Get history (to fill prices)
                     await ws.send(json.dumps({
                         "ticks_history": pair,
                         "end": "latest",
-                        "count": 50,
+                        "count": 100,
                         "granularity": 60,
-                        "style": "candles"
+                        "style": "ticks"
                     }))
+                    print(f"Requested history for {pair}")
 
+                # Keep receiving
                 while True:
-                    msg = json.loads(await ws.recv())
-                    
-                    # Handle history
-                    if "history" in msg:
-                        pair = msg["request"]["ticks_history"]
-                        if pair in pair_data:
-                            pair_data[pair]["prices"].clear()
-                            for c in msg["history"]["candles"]:
-                                pair_data[pair]["prices"].append(float(c['close']))
+                    try:
+                        msg = json.loads(await ws.recv())
+                        
+                        # Handle tick subscription response
+                        if msg.get("subscription"):
+                            print(f"Subscription confirmed for {msg['subscription']['id']}")
+                            continue
+                        
+                        # Handle history
+                        if msg.get("msg_type") == "history":
+                            pair = msg["request"]["ticks_history"]
+                            if pair in pair_data and "ticks" in msg:
+                                pair_data[pair]["prices"].clear()
+                                for t in msg["ticks"]:
+                                    pair_data[pair]["prices"].append(float(t["quote"]))
+                                print(f"History loaded for {pair}: {len(msg['ticks'])} ticks")
+                            continue
+                        
+                        # Handle live tick
+                        if msg.get("msg_type") == "tick":
+                            tick = msg["tick"]
+                            pair = tick["symbol"]
+                            if pair not in pair_data: continue
+                            
+                            data = pair_data[pair]
+                            live_price = float(tick["quote"])
+                            data["live_price"] = live_price
+                            data["prices"].append(live_price)
+                            epoch = int(tick["epoch"])
+                            sec = epoch % 60
+                            data["timer"] = f"00:{59-sec:02d}"
+                            data["last_tick"] = epoch
+                            
+                            print(f"TICK: {API_TO_LABEL[pair]} = {live_price} | Timer: {data['timer']}")
+                            
+                            # Signal at 55 sec
+                            if sec == 55 and len(data["prices"]) >= 30:
+                                p = list(data["prices"])
+                                rsi_val = rsi(p)
+                                trend = "UP" if p[-1] > p[-30] else "DOWN"
+                                
+                                buy = (rsi_val < 35) + (p[-1] > p[-2]) + (trend == "UP")
+                                sell = (rsi_val > 65) + (p[-1] < p[-2]) + (trend == "DOWN")
+                                
+                                if buy >= 2:
+                                    data["direction"] = "GREEN"
+                                    data["confidence"] = 99
+                                    data["predicted_price"] = round(live_price + 0.00045, 5)
+                                elif sell >= 2:
+                                    data["direction"] = "RED"
+                                    data["confidence"] = 99
+                                    data["predicted_price"] = round(live_price - 0.00045, 5)
+                                else:
+                                    data["direction"] = "NEUTRAL"
+                                    data["confidence"] = 50
+                                    data["predicted_price"] = round(live_price, 5)
+                                
+                                print(f"SIGNAL: {API_TO_LABEL[pair]} → {data['direction']} | {data['confidence']}% | RSI: {rsi_val:.1f}")
+                                
+                    except websockets.exceptions.ConnectionClosed:
+                        print("WebSocket closed. Reconnecting...")
+                        break
+                    except Exception as e:
+                        print("Message error:", e)
                         continue
-                    
-                    # Handle live tick
-                    if msg.get("msg_type") == "tick":
-                        tick = msg["tick"]
-                        pair = tick["symbol"]
-                        if pair not in pair_data: continue
-                        
-                        data = pair_data[pair]
-                        live_price = float(tick["quote"])
-                        data["live_price"] = live_price
-                        data["prices"].append(live_price)
-                        epoch = int(tick["epoch"])
-                        sec = epoch % 60
-                        data["timer"] = f"00:{59-sec:02d}"
-                        data["last_tick"] = epoch
-                        
-                        # Signal at 55 sec
-                        if sec == 55 and len(data["prices"]) >= 30:
-                            p = list(data["prices"])
-                            rsi_val = rsi(p)
-                            trend = "UP" if p[-1] > p[-30] else "DOWN"
-                            
-                            buy = (rsi_val < 35) + (p[-1] > p[-2]) + (trend == "UP")
-                            sell = (rsi_val > 65) + (p[-1] < p[-2]) + (trend == "DOWN")
-                            
-                            if buy >= 2:
-                                data["direction"] = "GREEN"
-                                data["confidence"] = 99
-                                data["predicted_price"] = round(live_price + 0.00045, 5)
-                            elif sell >= 2:
-                                data["direction"] = "RED"
-                                data["confidence"] = 99
-                                data["predicted_price"] = round(live_price - 0.00045, 5)
-                            else:
-                                data["direction"] = "NEUTRAL"
-                                data["confidence"] = 50
-                                data["predicted_price"] = round(live_price, 5)
-                            
-                            print(f"SIGNAL: {API_TO_LABEL[pair]} → {data['direction']} | {data['confidence']}% | Price: {live_price}")
                         
         except Exception as e:
-            print("Reconnecting...", e)
+            print("Reconnecting in 3s...", e)
             await asyncio.sleep(3)
 
 def start_ws():
