@@ -1,7 +1,7 @@
 // src/lib/api.ts
 import { TradingSignal } from '@/types';
 
-const API_BASE_URL = 'https://finorix-backend-v2.onrender.com/api/live';
+const API_BASE_URL = 'https://finorixaipro-production.up.railway.app/api/live';
 
 export const fetchTradingSignal = async (
   pair: string = 'frxEURUSD'
